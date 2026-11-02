@@ -1,0 +1,12 @@
+[submodule "review-job"]
+	path = review-job
+	url = https://github.com/BradleyZhang/ecommerce-review-job.git
+[submodule "review-service"]
+	path = review-service
+	url = https://github.com/BradleyZhang/ecommerce-review-service.git
+[submodule "review-b"]
+	path = review-b
+	url = https://github.com/BradleyZhang/ecommerce-review-b.git
+[submodule "review-o"]
+	path = review-o
+	url = https://github.com/BradleyZhang/ecommerce-review-o.git
