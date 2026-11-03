@@ -11,6 +11,8 @@ Ecommerce Review Service
 | review-b	| 评论业务服务 B	| 8086	| 9096 |
 | review-o	| 评论业务服务 O	| 8087	| 9097 |
 
+[API](https://bradleyzhang.github.io/ecommerce-review-apis/)
+
 部署
 
 Docker Compose
