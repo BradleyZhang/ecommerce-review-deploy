@@ -1,0 +1,310 @@
+# ============================================================
+# 电商评论系统 —— 一键部署所有微服务
+#
+#   基础设施：MySQL / Redis / Consul / Kafka / Canal
+#   微服务：  review-service / review-b / review-o / review-job
+#
+# 使用步骤：
+#   1. git submodule update --init --recursive   # 拉取各服务下的 api 子模块
+#   2. cp .env.example .env                      # 填写 ES 地址、密码等
+#   3. docker compose up -d --build
+#
+# 说明：
+#   - Elasticsearch 默认使用外部云实例，通过 .env 的 ES_ADDRESSES / ES_API_KEY 注入；
+#     如需本地部署，取消下方「可选：本地 Elasticsearch」整段注释即可。
+#     服务名（IP 环境变量），因此 review-b/review-o 能发现 review-service。
+# ============================================================
+
+name: ecommerce-review
+
+services:
+  # ==================== 基础设施 ====================
+
+  mysql:
+    image: mysql:8.2
+    container_name: review-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root1234}
+      MYSQL_DATABASE: review
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --server-id=1
+      - --binlog-do-db=review
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./review-service/db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./canal/init/02-canal-user.sql:/docker-entrypoint-initdb.d/02-canal-user.sql:ro
+    ports:
+      - "3306:3306"
+    networks:
+      - review-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: review-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - review-net
+
+  consul:
+    image: hashicorp/consul:1.21.3
+    container_name: review-consul
+    restart: unless-stopped
+    command:
+      - agent
+      - -server
+      - -bootstrap-expect=1
+      - -node=consul-server
+      - -datacenter=dc1
+      - -ui
+      - -client=0.0.0.0
+      - -data-dir=/consul/data
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - consul_data:/consul/data
+    ports:
+      - "8500:8500"
+      - "8600:8600/udp"
+    networks:
+      - review-net
+
+  kafka:
+    image: apache/kafka:3.8.1
+    container_name: review-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    ports:
+      - "9092:9092"
+    networks:
+      - review-net
+
+  #  Canal（MySQL binlog -> Kafka）
+  canal:
+    image: canal/canal-server:v1.1.8
+    container_name: review-canal
+    restart: unless-stopped
+    environment:
+      - canal.destinations=example
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./canal/patch-and-start.sh:/patch-and-start.sh:ro
+      - canal_logs:/home/admin/canal-server/logs
+    command: ["/bin/bash", "/patch-and-start.sh"]
+    ports:
+      - "11111:11111"
+      - "11112:11112"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 11111 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - review-net
+
+  # ==================== 可选：本地 Elasticsearch ====================
+  # 默认不启动。启用步骤：
+  #   1. 取消本段 elasticsearch 服务与文件末尾 es_data 卷的注释
+  #   2. 将 review-service / review-job 的 ES_ADDRESSES 改为 http://elasticsearch:9200
+  #      （或直接在 .env 中设置 ES_ADDRESSES=http://elasticsearch:9200）
+  #   3. ES_API_KEY 留空
+  #   4. docker compose up -d --build
+  #
+  # elasticsearch:
+  #   image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+  #   container_name: review-es
+  #   restart: unless-stopped
+  #   environment:
+  #     - discovery.type=single-node
+  #     - xpack.security.enabled=false
+  #     - xpack.security.http.ssl.enabled=false
+  #     - ES_JAVA_OPTS=-Xms512m -Xmx512m
+  #     - TZ=Asia/Shanghai
+  #   ulimits:
+  #     memlock:
+  #       soft: -1
+  #       hard: -1
+  #   volumes:
+  #     - es_data:/usr/share/elasticsearch/data
+  #   ports:
+  #     - "9200:9200"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 30
+  #     start_period: 40s
+  #   networks:
+  #     - review-net
+
+  # ==================== 微服务 ====================
+
+  # review-service HTTP 8085 / gRPC 9095，依赖 MySQL、Redis、Consul、ES
+  review-service:
+    build:
+      context: ./review-service
+      dockerfile: Dockerfile
+    image: ecommerce-review/review-service:latest
+    container_name: review-service
+    restart: unless-stopped
+    environment:
+      PORT: "8085"
+      PORT_GRPC: "9095"
+      IP: review-service
+      MACHINE_ID: "1"
+      DSN: "root:${MYSQL_ROOT_PASSWORD:-root1234}@tcp(mysql:3306)/review?charset=utf8mb4&parseTime=True"
+      REDIS_ADDRESS: "redis:6379"
+      CONSUL_ADDRESS: "consul:8500"
+      ES_ADDRESSES: "${ES_ADDRESSES:-}"       # 启用本地 ES 时改为：ES_ADDRESSES: "http://elasticsearch:9200"
+      ES_API_KEY: "${ES_API_KEY:-}"
+      DEBUG_MODE: "${DEBUG_MODE:-false}"
+    ports:
+      - "8085:8085"
+      - "9095:9095"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      # elasticsearch:
+      #   condition: service_healthy
+    networks:
+      - review-net
+
+  # b 端：HTTP 8086 / gRPC 9096，通过 Consul 发现 review-service
+  review-b:
+    build:
+      context: ./review-b
+      dockerfile: Dockerfile
+    image: ecommerce-review/review-b:latest
+    container_name: review-b
+    restart: unless-stopped
+    environment:
+      PORT: "8086"
+      PORT_GRPC: "9096"
+      IP: review-b
+      CONSUL_ADDRESS: "consul:8500"
+      DEBUG_MODE: "${DEBUG_MODE:-false}"
+    ports:
+      - "8086:8086"
+      - "9096:9096"
+    depends_on:
+      consul:
+        condition: service_healthy
+      review-service:
+        condition: service_started
+    networks:
+      - review-net
+
+  # o 端：HTTP 8087 / gRPC 9097
+  review-o:
+    build:
+      context: ./review-o
+      dockerfile: Dockerfile
+    image: ecommerce-review/review-o:latest
+    container_name: review-o
+    restart: unless-stopped
+    environment:
+      PORT: "8087"
+      PORT_GRPC: "9097"
+      IP: review-o
+      CONSUL_ADDRESS: "consul:8500"
+      DEBUG_MODE: "${DEBUG_MODE:-false}"
+    ports:
+      - "8087:8087"
+      - "9097:9097"
+    depends_on:
+      consul:
+        condition: service_healthy
+      review-service:
+        condition: service_started
+    networks:
+      - review-net
+
+  # review-job：消费 Kafka 中的 MySQL 变更消息写入 ES
+  review-job:
+    build:
+      context: ./review-job
+      dockerfile: Dockerfile
+    image: ecommerce-review/review-job:latest
+    container_name: review-job
+    restart: unless-stopped
+    environment:
+      KAFKA_SEEDS: "kafka:9092"
+      ES_ADDRESSES: "${ES_ADDRESSES:-}"
+      # 启用本地 ES 时改为：ES_ADDRESSES: "http://elasticsearch:9200"
+      ES_API_KEY: "${ES_API_KEY:-}"
+      DEBUG_MODE: "${DEBUG_MODE:-false}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      # elasticsearch:
+      #   condition: service_healthy
+    networks:
+      - review-net
+
+networks:
+  review-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  consul_data:
+  kafka_data:
+  canal_logs:
+  # es_data:   # 启用本地 Elasticsearch 时取消注释
