@@ -161,33 +161,33 @@ services:
   #      （或直接在 .env 中设置 ES_ADDRESSES=http://elasticsearch:9200）
   #   3. ES_API_KEY 留空
   #   4. docker compose up -d --build
-  #
-  # elasticsearch:
-  #   image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
-  #   container_name: review-es
-  #   restart: unless-stopped
-  #   environment:
-  #     - discovery.type=single-node
-  #     - xpack.security.enabled=false
-  #     - xpack.security.http.ssl.enabled=false
-  #     - ES_JAVA_OPTS=-Xms512m -Xmx512m
-  #     - TZ=Asia/Shanghai
-  #   ulimits:
-  #     memlock:
-  #       soft: -1
-  #       hard: -1
-  #   volumes:
-  #     - es_data:/usr/share/elasticsearch/data
-  #   ports:
-  #     - "9200:9200"
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 30
-  #     start_period: 40s
-  #   networks:
-  #     - review-net
+  
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+    container_name: review-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - TZ=Asia/Shanghai
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks:
+      - review-net
 
   # ==================== 微服务 ====================
 
@@ -207,7 +207,8 @@ services:
       DSN: "root:${MYSQL_ROOT_PASSWORD:-root1234}@tcp(mysql:3306)/review?charset=utf8mb4&parseTime=True"
       REDIS_ADDRESS: "redis:6379"
       CONSUL_ADDRESS: "consul:8500"
-      ES_ADDRESSES: "${ES_ADDRESSES:-}"       # 启用本地 ES 时改为：ES_ADDRESSES: "http://elasticsearch:9200"
+      # ES_ADDRESSES: "${ES_ADDRESSES:-}"      
+      ES_ADDRESSES: "http://elasticsearch:9200"  # 启用本地 ES 时
       ES_API_KEY: "${ES_API_KEY:-}"
       DEBUG_MODE: "${DEBUG_MODE:-false}"
     ports:
@@ -285,8 +286,8 @@ services:
     restart: unless-stopped
     environment:
       KAFKA_SEEDS: "kafka:9092"
-      ES_ADDRESSES: "${ES_ADDRESSES:-}"
-      # 启用本地 ES 时改为：ES_ADDRESSES: "http://elasticsearch:9200"
+      # ES_ADDRESSES: "${ES_ADDRESSES:-}"
+      ES_ADDRESSES: "http://elasticsearch:9200" # 启用本地 ES
       ES_API_KEY: "${ES_API_KEY:-}"
       DEBUG_MODE: "${DEBUG_MODE:-false}"
     depends_on:
@@ -307,4 +308,4 @@ volumes:
   consul_data:
   kafka_data:
   canal_logs:
-  # es_data:   # 启用本地 Elasticsearch 时取消注释
+  es_data:   # 启用本地 Elasticsearch 时取消注释
